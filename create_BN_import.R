@@ -34,6 +34,13 @@ samples <- BN %>%
   filter(str_detect(PANGOLIN_NOM, "Ikke", negate = T)) %>% 
   filter(PANGOLIN_NOM != "")
 
+# Modify sequence id's for joining later
+samples <- samples %>% 
+  mutate(SEQUENCEID_NANO29 = str_replace(SEQUENCEID_NANO29, "-SC2", "SC2")) %>% 
+  mutate(SEQUENCEID_NANO29 = str_replace(SEQUENCEID_NANO29, "_SC2", "SC2")) %>% 
+  mutate(SEQUENCEID_SWIFT = str_replace(SEQUENCEID_SWIFT, "-SC2", "SC2")) %>% 
+  mutate(SEQUENCEID_SWIFT = str_replace(SEQUENCEID_SWIFT, "_SC2", "SC2"))
+
 # Load the resistance associated mutations
 # Download latest csv from here: https://covdb.stanford.edu/drms/3clpro/
 stanf_3clpro <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.01.12_3CLpro_inhibitors.csv") %>% 
@@ -280,7 +287,7 @@ try(
 # RdRP (nsp12) is on ORF1b
 nextclade_rdrp_mutations <- mutations_raw %>% 
   # Get only ORF1b
-  select(name, ORF1b) %>%
+  select(name, ORF1b) %>% 
   # Separate all the mutations. Gives a list for each sample
   mutate("tmp" = str_split(ORF1b, ";")) %>% 
   # Unnest the list column (which is basically another pivot_longer)
@@ -308,106 +315,123 @@ nextclade_rdrp_mutations <- mutations_raw %>%
 RAVN_RdRP <- left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
   # Renaming the resistance column
   rename("RdRP_resistance" = "stanford_res") %>% 
-  # Add info on strength of resistance
-  mutate("type" = case_when(
-    RDV_fold >= 10                 ~ "high_res",
-    RDV_fold >= 5 | RDV_fold < 10  ~ "mid_res",
-    RDV_fold >= 2.5 | RDV_fold < 5 ~ "very_mid_res",
-    RDV_fold < 2.5                 ~ "white"
-  )) %>% 
-  select("sample" = name,
+  select(name,
          RdRP_resistance) %>% 
   distinct() %>% 
   # Remove only NA's
   filter(!is.na(RdRP_resistance))
 
+# Create a list of Keys and RdRP mutations just for reference. This does not go into BN
+# Remove all "-" and "_" in the SequenceID's for matching
+to_BN_RdRP <- RAVN_RdRP %>% 
+  mutate(name = str_replace(name, "-SC2", "SC2")) %>% 
+  mutate(name = str_replace(name, "_SC2", "SC2"))
+
+# First match on the KEY
+RdRP_BN_import <- left_join(samples, to_BN_RdRP, by = c("KEY" = "name")) %>%
+  # Then match on the Nanopore sequence id
+  left_join(to_BN_RdRP, by = c("SEQUENCEID_NANO29" = "name")) %>% 
+  mutate(RdRP_resistance = coalesce(RdRP_resistance.x, RdRP_resistance.y)) %>%
+  select(-RdRP_resistance.x, -RdRP_resistance.y) %>% 
+  # Then match on the Swift sequence id
+  left_join(to_BN_RdRP, by = c("SEQUENCEID_SWIFT" = "name")) %>% 
+  mutate(RdRP_resistance = coalesce(RdRP_resistance.x, RdRP_resistance.y)) %>%
+  # Keep relevant columns for BN import
+  select(KEY, RdRP_resistance) %>% 
+  # Replace NA to the string NA. This would mean that we have no info on these samples
+  replace_na(list(RdRP_resistance = "NA"))
+
+write_csv(RdRP_BN_import, 
+          file = paste0("C:/Users/jonr/OneDrive - Folkehelseinstituttet/Desktop/", format(Sys.Date(), "%Y.%m.%d"), "-RdRP_resistance.csv"),
+          na = "")
+
 # To BN
 
-df <- left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
-  # Renaming the resistance column
-  rename("RdRP_resistance" = "stanford_res") %>% 
-  # Add info on strength of resistance
-  mutate("type" = case_when(
-    RDV_fold >= 10                 ~ "high_res",
-    RDV_fold >= 5 | RDV_fold < 10  ~ "mid_res",
-    RDV_fold >= 2.5 | RDV_fold < 5 ~ "very_mid_res",
-    RDV_fold < 2.5                 ~ "white"
-  ))
-
-# Create empty data frame
-to_BN_rdrp <- df %>% 
-  select(name) %>% distinct() %>%  
-  add_column("pax_high_res" = NA,
-             "pax_mid_res" = NA,
-             "pax_low_res" = NA,
-             "rdrp" = NA) %>% 
-  # Change all columns to character columns
-  mutate(across(everything(), as.character))
-
-# First need to get all the rdrp mutations in the same cell.
-try(
-  rdrp_all_muts <- df %>% 
-    select(name, RdRP) %>% 
-    add_column(dummy = "x") %>% 
-    pivot_wider(names_from = dummy, values_from = RdRP) %>% 
-    unnest_wider(x, names_sep = "_") %>% 
-    unite("rdrp", starts_with("x_"), sep = ";", na.rm = TRUE)
-)
-try(
-  to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_all_muts, by = "name") %>% 
-    # Coalesce the two rdrp columns. WIll add from rdrp_all_muts if there is NA in to_BN_rdrp
-    mutate(rdrp = coalesce(rdrp.x, rdrp.y)) %>%
-    select(-rdrp.x, -rdrp.y)
-)
-
-# Then only rdrp resistance mutations for the different categories
-try(
-  rdrp_high_res <- df %>% 
-    filter(type == "pax_high_res") %>% 
-    select(name, RdRP_resistance) %>% 
-    add_column(dummy = "x") %>% 
-    pivot_wider(names_from = dummy, values_from = RdRP_resistance) %>% 
-    unnest_wider(x, names_sep = "_") %>% 
-    unite("pax_high_res", starts_with("x_"), sep = ";", na.rm = TRUE)
-)
-try(
-  to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_high_res, by = "name") %>% 
-    # Coalesce the two pax_high_res columns. WIll add from rdrp_high_res if there is NA in to_BN_rdrp
-    mutate(pax_high_res = coalesce(pax_high_res.x, pax_high_res.y)) %>%
-    select(-pax_high_res.x, -pax_high_res.y)
-)
-
-try(
-  rdrp_mid_res <- df %>% 
-    filter(type == "pax_mid_res") %>% 
-    select(name, RdRP_resistance) %>% 
-    add_column(dummy = "x") %>% 
-    pivot_wider(names_from = dummy, values_from = RdRP_resistance) %>% 
-    unnest_wider(x, names_sep = "_") %>% 
-    unite("pax_mid_res", starts_with("x_"), sep = ";", na.rm = TRUE)
-)
-try(
-  to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_mid_res, by = "name") %>% 
-    # Coalesce the two pax_mid_res columns. WIll add from rdrp_mid_res if there is NA in to_BN_rdrp
-    mutate(pax_mid_res = coalesce(pax_mid_res.x, pax_mid_res.y)) %>%
-    select(-pax_mid_res.x, -pax_mid_res.y)
-)
-
-try(
-  rdrp_low_res <- df %>% 
-    filter(type == "pax_low_res") %>% 
-    select(name, RdRP_resistance) %>% 
-    add_column(dummy = "x") %>% 
-    pivot_wider(names_from = dummy, values_from = RdRP_resistance) %>% 
-    unnest_wider(x, names_sep = "_") %>% 
-    unite("pax_low_res", starts_with("x_"), sep = ";", na.rm = TRUE)
-)
-try(
-  to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_low_res, by = "name") %>% 
-    # Coalesce the two pax_low_res columns. WIll add from rdrp_low_res if there is NA in to_BN_rdrp
-    mutate(pax_low_res = coalesce(pax_low_res.x, pax_low_res.y)) %>%
-    select(-pax_low_res.x, -pax_low_res.y)
-)
+# df <- left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
+#   # Renaming the resistance column
+#   rename("RdRP_resistance" = "stanford_res") %>% 
+#   # Add info on strength of resistance
+#   mutate("type" = case_when(
+#     RDV_fold >= 10                 ~ "high_res",
+#     RDV_fold >= 5 | RDV_fold < 10  ~ "mid_res",
+#     RDV_fold >= 2.5 | RDV_fold < 5 ~ "very_mid_res",
+#     RDV_fold < 2.5                 ~ "white"
+#   ))
+# 
+# # Create empty data frame
+# to_BN_rdrp <- df %>% 
+#   select(name) %>% distinct() %>%  
+#   add_column("pax_high_res" = NA,
+#              "pax_mid_res" = NA,
+#              "pax_low_res" = NA,
+#              "rdrp" = NA) %>% 
+#   # Change all columns to character columns
+#   mutate(across(everything(), as.character))
+# 
+# # First need to get all the rdrp mutations in the same cell.
+# try(
+#   rdrp_all_muts <- df %>% 
+#     select(name, RdRP) %>% 
+#     add_column(dummy = "x") %>% 
+#     pivot_wider(names_from = dummy, values_from = RdRP) %>% 
+#     unnest_wider(x, names_sep = "_") %>% 
+#     unite("rdrp", starts_with("x_"), sep = ";", na.rm = TRUE)
+# )
+# try(
+#   to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_all_muts, by = "name") %>% 
+#     # Coalesce the two rdrp columns. WIll add from rdrp_all_muts if there is NA in to_BN_rdrp
+#     mutate(rdrp = coalesce(rdrp.x, rdrp.y)) %>%
+#     select(-rdrp.x, -rdrp.y)
+# )
+# 
+# # Then only rdrp resistance mutations for the different categories
+# try(
+#   rdrp_high_res <- df %>% 
+#     filter(type == "pax_high_res") %>% 
+#     select(name, RdRP_resistance) %>% 
+#     add_column(dummy = "x") %>% 
+#     pivot_wider(names_from = dummy, values_from = RdRP_resistance) %>% 
+#     unnest_wider(x, names_sep = "_") %>% 
+#     unite("pax_high_res", starts_with("x_"), sep = ";", na.rm = TRUE)
+# )
+# try(
+#   to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_high_res, by = "name") %>% 
+#     # Coalesce the two pax_high_res columns. WIll add from rdrp_high_res if there is NA in to_BN_rdrp
+#     mutate(pax_high_res = coalesce(pax_high_res.x, pax_high_res.y)) %>%
+#     select(-pax_high_res.x, -pax_high_res.y)
+# )
+# 
+# try(
+#   rdrp_mid_res <- df %>% 
+#     filter(type == "pax_mid_res") %>% 
+#     select(name, RdRP_resistance) %>% 
+#     add_column(dummy = "x") %>% 
+#     pivot_wider(names_from = dummy, values_from = RdRP_resistance) %>% 
+#     unnest_wider(x, names_sep = "_") %>% 
+#     unite("pax_mid_res", starts_with("x_"), sep = ";", na.rm = TRUE)
+# )
+# try(
+#   to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_mid_res, by = "name") %>% 
+#     # Coalesce the two pax_mid_res columns. WIll add from rdrp_mid_res if there is NA in to_BN_rdrp
+#     mutate(pax_mid_res = coalesce(pax_mid_res.x, pax_mid_res.y)) %>%
+#     select(-pax_mid_res.x, -pax_mid_res.y)
+# )
+# 
+# try(
+#   rdrp_low_res <- df %>% 
+#     filter(type == "pax_low_res") %>% 
+#     select(name, RdRP_resistance) %>% 
+#     add_column(dummy = "x") %>% 
+#     pivot_wider(names_from = dummy, values_from = RdRP_resistance) %>% 
+#     unnest_wider(x, names_sep = "_") %>% 
+#     unite("pax_low_res", starts_with("x_"), sep = ";", na.rm = TRUE)
+# )
+# try(
+#   to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_low_res, by = "name") %>% 
+#     # Coalesce the two pax_low_res columns. WIll add from rdrp_low_res if there is NA in to_BN_rdrp
+#     mutate(pax_low_res = coalesce(pax_low_res.x, pax_low_res.y)) %>%
+#     select(-pax_low_res.x, -pax_low_res.y)
+# )
 
 
 # Create BN import files --------------------------------------------------
@@ -417,12 +441,6 @@ try(
 to_BN_NSP5 <- to_BN_NSP5 %>% 
   mutate(name = str_replace(name, "-SC2", "SC2")) %>% 
   mutate(name = str_replace(name, "_SC2", "SC2"))
-
-samples <- samples %>% 
-  mutate(SEQUENCEID_NANO29 = str_replace(SEQUENCEID_NANO29, "-SC2", "SC2")) %>% 
-  mutate(SEQUENCEID_NANO29 = str_replace(SEQUENCEID_NANO29, "_SC2", "SC2")) %>% 
-  mutate(SEQUENCEID_SWIFT = str_replace(SEQUENCEID_SWIFT, "-SC2", "SC2")) %>% 
-  mutate(SEQUENCEID_SWIFT = str_replace(SEQUENCEID_SWIFT, "_SC2", "SC2"))
 
 # First match on the KEY
 NSP5_BN_import <- left_join(samples, to_BN_NSP5, by = c("KEY" = "name")) %>%
