@@ -440,7 +440,9 @@ NSP5_BN_import <- left_join(samples, to_BN_NSP5, by = c("KEY" = "name")) %>%
   mutate(pax_mid_res = coalesce(pax_mid_res.x, pax_mid_res.y)) %>%
   mutate(pax_high_res = coalesce(pax_high_res.x, pax_high_res.y)) %>% 
   # Keep relevant columns for BN import
-  select(KEY, pax_high_res, pax_mid_res, pax_low_res, NSP5)
+  select(KEY, pax_high_res, pax_mid_res, pax_low_res, NSP5) %>% 
+  # Replace NA to the string NA. This would mean that we have no info on these samples
+  replace_na(list(NSP5 = "NA"))
 
 write_csv(NSP5_BN_import, 
           file = paste0("C:/Users/jonr/OneDrive - Folkehelseinstituttet/Desktop/", format(Sys.Date(), "%Y.%m.%d"), "-NSP5_resistance_BN_import.csv"),
