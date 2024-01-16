@@ -3,10 +3,6 @@ library(tidyverse)
 
 # TODO --------------------------------------------------------------------
 
-# Make a single BN import file in the end
-
-
-
 # Prepare input data ------------------------------------------------------
 
 # Load the resistance associated mutations
@@ -217,7 +213,8 @@ try(
 
 # RdRP --------------------------------------------------------------------
 
-# NB! It makes to sense to put these mutations under paxlovid columns?
+# NB! The RdRP code here is not relevant for BN import. 
+# There is no paxlovid resistance for RdRP
 
 # RdRP (nsp12) is on ORF1b
 nextclade_rdrp_mutations <- mutations_raw %>% 
