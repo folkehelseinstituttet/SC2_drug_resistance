@@ -1,28 +1,90 @@
 library(tidyverse)
 
-# nsp5 --------------------------------------------------------------------
 
-# Create one big df for all the nextclade and pangolin files
-# TODO: Add SIHF and Ahus into the big tibble
+# TODO --------------------------------------------------------------------
 
 # Make a single BN import file in the end
-files <- list.files("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/2023/",
+
+
+
+# Prepare input data ------------------------------------------------------
+
+# Load the resistance associated mutations
+stanf_3clpro <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.01.12_3CLpro_inhibitors.csv") %>% 
+  rename("stanford_res" = Mutation) %>%
+  # Rename the paxlovid fold
+  rename("NTV_fold" = `NTV: fold`) %>% 
+  # Change del to "-"
+  mutate(stanford_res = str_replace(stanford_res, "del", "-")) %>% 
+  mutate(stanford_position  = as.numeric(str_sub(stanford_res, 2, -2)),
+         stanford_reference = str_sub(stanford_res, 1, 1),
+         stanford_mutated   = str_sub(stanford_res, -1, -1)) %>% 
+  mutate(nextclade_position = stanford_position + 3263)
+
+# Load the resistance associated mutations
+stanf_rdrp <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.01.12_RdRP_inhibitors.csv") %>% 
+  rename("stanford_res" = Mutation) %>%
+  # Rename the remdesivir fold
+  rename("RDV_fold" = `RDV: fold`) %>% 
+  # Change del to "-"
+  mutate(stanford_res = str_replace(stanford_res, "del", "-")) %>% 
+  mutate(stanford_position  = as.numeric(str_sub(stanford_res, 2, -2)),
+         stanford_reference = str_sub(stanford_res, 1, 1),
+         stanford_mutated   = str_sub(stanford_res, -1, -1)) %>% 
+  mutate(nextclade_position = stanford_position - 9)
+
+# Get Nextclade mutations
+
+# year to analyze
+year <- "2023"
+
+nanopore_files <- list.files(paste0("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/", year, "/"),
                     pattern = "summaries_and_Pangolin.csv$",
                     full.names = TRUE,
                     recursive = TRUE)
 
+
+sihf_files <- list.files("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Eksterne/SIHF/",
+                    pattern = "AndPangolin.csv$",
+                    full.names = TRUE,
+                    recursive = TRUE)
+
+# Extract only 2023 files
+pattern <- paste0("SIHF_hCoV_WGS\\d{6}_", year)
+sihf_files <- sihf_files[sihf_files %>% str_detect(pattern)]
+
+ahus_files <- list.files(paste0("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Eksterne/Ahus/", year, "/"),
+                    pattern = "AndPangolin.csv$",
+                    full.names = TRUE,
+                    recursive = TRUE)
+
+files <- c(nanopore_files, sihf_files, ahus_files)
+
 # Read all the files and combine
-res <- list()
-for (i in 1:length(files)) {
-  res[[i]] <- read_tsv(files[i]) %>% 
-    select(name, ORF1a)
+res <- vector("list", length = length(files))
+pb <- txtProgressBar(min = 0, max = length(files), initial = 0, style = 3) 
+for (i in seq_along(files)) {
+  try({
+    res[[i]] <- read_tsv(files[i], show_col_types = F) %>% 
+    select(name, ORF1a, ORF1b)
+  }, silent = TRUE)
+  setTxtProgressBar(pb, i)
 }
+close(pb)
 
 # Combine everything into one big tibble
-mutatations_raw <- bind_rows(res)
+mutations_raw <- bind_rows(res) %>% 
+  # Remove samples with NA for both ORF1a and ORF1b
+  filter(!is.na(ORF1a) & !is.na(ORF1b)) %>% 
+  # Fix Ahus names to match BN Key (i.e. remove everything after first "|" symbol)
+  separate(name, into = c("name"), sep = "\\|", remove = TRUE) 
+
+
+
+# nsp5 --------------------------------------------------------------------
 
 # nsp5 is on ORF1a
-nextclade_nsp5_mutations <- mutatations_raw %>% 
+nextclade_nsp5_mutations <- mutations_raw %>% 
   # Get only ORF1a
   select(name, ORF1a) %>%
   # Separate all the mutations. Gives a list for each sample
@@ -44,19 +106,8 @@ nextclade_nsp5_mutations <- mutatations_raw %>%
   # Create column for nsp5 mutations
   unite("NSP5", c("nextclade_reference", "stanford_position", "nextclade_mutated"), sep = "")
 
-
 # Add the resistance mutations to the nextclade mutations
 # If any resistance mutations are present they will be in the "stanford_res" column
-left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "stanford_res"), keep = TRUE) %>% 
-  # Renaming the resistance column
-  rename("NSP5_resistance" = "stanford_res") %>% 
-  # Add info on strength of resistance
-  mutate("type" = case_when(
-    NTV_fold >= 10                 ~ "high_res",
-    NTV_fold >= 5 | NTV_fold < 10  ~ "mid_res",
-    NTV_fold >= 2.5 | NTV_fold < 5 ~ "very_mid_res",
-    NTV_fold < 2.5                 ~ "white"
-  )) %>% View()
 
 # To RAVN
 RAVN_nsp5 <- left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "stanford_res"), keep = TRUE) %>% 
@@ -76,7 +127,6 @@ RAVN_nsp5 <- left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "
   filter(!is.na(NSP5_resistance))
 
 # To BN
-# Maybe I have to loop throught the data structure here and create the different cells separately
 
 df <- left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "stanford_res"), keep = TRUE) %>% 
   # Renaming the resistance column
@@ -95,7 +145,9 @@ to_BN_NSP5 <- df %>%
   add_column("pax_high_res" = NA,
              "pax_mid_res" = NA,
              "pax_low_res" = NA,
-             "NSP5" = NA)
+             "NSP5" = NA) %>% 
+  # Change all columns to character columns
+  mutate(across(everything(), as.character))
 
 # First need to get all the NSP5 mutations in the same cell.
 try(
@@ -107,7 +159,10 @@ try(
     unite("NSP5", starts_with("x_"), sep = ";", na.rm = TRUE)
 )
 try(
-  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_all_muts, by = "name")
+  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_all_muts, by = "name") %>% 
+    # Coalesce the two NSP5 columns. WIll add from NSP5_all_muts if there is NA in to_BN_NSP5
+    mutate(NSP5 = coalesce(NSP5.x, NSP5.y)) %>%
+    select(-NSP5.x, -NSP5.y)
 )
 
 # Then only NSP5 resistance mutations for the different categories
@@ -121,7 +176,10 @@ try(
     unite("pax_high_res", starts_with("x_"), sep = ";", na.rm = TRUE)
 )
 try(
-  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_high_res, by = "name")
+  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_high_res, by = "name") %>% 
+    # Coalesce the two pax_high_res columns. WIll add from NSP5_high_res if there is NA in to_BN_NSP5
+    mutate(pax_high_res = coalesce(pax_high_res.x, pax_high_res.y)) %>%
+    select(-pax_high_res.x, -pax_high_res.y)
 )
 
 try(
@@ -134,7 +192,10 @@ try(
     unite("pax_mid_res", starts_with("x_"), sep = ";", na.rm = TRUE)
 )
 try(
-  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_mid_res, by = "name")
+  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_mid_res, by = "name") %>% 
+    # Coalesce the two pax_mid_res columns. WIll add from NSP5_mid_res if there is NA in to_BN_NSP5
+    mutate(pax_mid_res = coalesce(pax_mid_res.x, pax_mid_res.y)) %>%
+    select(-pax_mid_res.x, -pax_mid_res.y)
 )
 
 try(
@@ -147,41 +208,19 @@ try(
     unite("pax_low_res", starts_with("x_"), sep = ";", na.rm = TRUE)
 )
 try(
-  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_low_res, by = "name")
+  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_low_res, by = "name") %>% 
+    # Coalesce the two pax_low_res columns. WIll add from NSP5_low_res if there is NA in to_BN_NSP5
+    mutate(pax_low_res = coalesce(pax_low_res.x, pax_low_res.y)) %>%
+    select(-pax_low_res.x, -pax_low_res.y)
 )
 
-# Fix for BN import
-to_BN_NSP5 <- to_BN_NSP5 %>% 
-  rename("LW_ORIG_PROVE" = "name")
-
-# Test
-write_csv(to_BN_NSP5, 
-          file = "C:/Users/jonr/OneDrive - Folkehelseinstituttet/Desktop/BN_resistance_test_import.csv",
-          na = "")
 
 # RdRP --------------------------------------------------------------------
 
-# Create one big df for all the nextclade and pangolin files
-# TODO: Add SIHF and Ahus into the big tibble
-
-# Make a single BN import file in the end
-files <- list.files("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/2023/",
-                    pattern = "summaries_and_Pangolin.csv$",
-                    full.names = TRUE,
-                    recursive = TRUE)
-
-# Read all the files and combine
-res <- list()
-for (i in 1:length(files)) {
-  res[[i]] <- read_tsv(files[i]) %>% 
-    select(name, ORF1b)
-}
-
-# Combine everything into one big tibble
-mutatations_raw <- bind_rows(res)
+# NB! It makes to sense to put these mutations under paxlovid columns?
 
 # RdRP (nsp12) is on ORF1b
-nextclade_rdrp_mutations <- mutatations_raw %>% 
+nextclade_rdrp_mutations <- mutations_raw %>% 
   # Get only ORF1b
   select(name, ORF1b) %>%
   # Separate all the mutations. Gives a list for each sample
@@ -203,30 +242,9 @@ nextclade_rdrp_mutations <- mutatations_raw %>%
   # Create column for nsp5 mutations
   unite("RdRP", c("nextclade_reference", "stanford_position", "nextclade_mutated"), sep = "")
 
-# Load the resistance associated mutations
-stanf_rdrp <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.01.12_RdRP_inhibitors.csv") %>% 
-  rename("stanford_res" = Mutation) %>%
-  # Rename the remdesivir fold
-  rename("RDV_fold" = `RDV: fold`) %>% 
-  # Change del to "-"
-  mutate(stanford_res = str_replace(stanford_res, "del", "-")) %>% 
-  mutate(stanford_position  = as.numeric(str_sub(stanford_res, 2, -2)),
-         stanford_reference = str_sub(stanford_res, 1, 1),
-         stanford_mutated   = str_sub(stanford_res, -1, -1)) %>% 
-  mutate(nextclade_position = stanford_position - 9)
-
 # Add the resistance mutations to the nextclade mutations
 # If any resistance mutations are present they will be in the "stanford_res" column
-left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
-  # Renaming the resistance column
-  rename("RdRP_resistance" = "stanford_res") %>% 
-  # Add info on strength of resistance
-  mutate("type" = case_when(
-    RDV_fold >= 10                 ~ "high_res",
-    RDV_fold >= 5 | RDV_fold < 10  ~ "mid_res",
-    RDV_fold >= 2.5 | RDV_fold < 5 ~ "very_mid_res",
-    RDV_fold < 2.5                 ~ "white"
-  )) %>% View()
+
 
 # To RAVN
 RAVN_RdRP <- left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
@@ -245,6 +263,119 @@ RAVN_RdRP <- left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "st
   # Remove only NA's
   filter(!is.na(RdRP_resistance))
 
+# To BN
+
+df <- left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
+  # Renaming the resistance column
+  rename("RdRP_resistance" = "stanford_res") %>% 
+  # Add info on strength of resistance
+  mutate("type" = case_when(
+    RDV_fold >= 10                 ~ "high_res",
+    RDV_fold >= 5 | RDV_fold < 10  ~ "mid_res",
+    RDV_fold >= 2.5 | RDV_fold < 5 ~ "very_mid_res",
+    RDV_fold < 2.5                 ~ "white"
+  ))
+
+# Create empty data frame
+to_BN_rdrp <- df %>% 
+  select(name) %>% distinct() %>%  
+  add_column("pax_high_res" = NA,
+             "pax_mid_res" = NA,
+             "pax_low_res" = NA,
+             "rdrp" = NA) %>% 
+  # Change all columns to character columns
+  mutate(across(everything(), as.character))
+
+# First need to get all the rdrp mutations in the same cell.
+try(
+  rdrp_all_muts <- df %>% 
+    select(name, RdRP) %>% 
+    add_column(dummy = "x") %>% 
+    pivot_wider(names_from = dummy, values_from = RdRP) %>% 
+    unnest_wider(x, names_sep = "_") %>% 
+    unite("rdrp", starts_with("x_"), sep = ";", na.rm = TRUE)
+)
+try(
+  to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_all_muts, by = "name") %>% 
+    # Coalesce the two rdrp columns. WIll add from rdrp_all_muts if there is NA in to_BN_rdrp
+    mutate(rdrp = coalesce(rdrp.x, rdrp.y)) %>%
+    select(-rdrp.x, -rdrp.y)
+)
+
+# Then only rdrp resistance mutations for the different categories
+try(
+  rdrp_high_res <- df %>% 
+    filter(type == "pax_high_res") %>% 
+    select(name, RdRP_resistance) %>% 
+    add_column(dummy = "x") %>% 
+    pivot_wider(names_from = dummy, values_from = RdRP_resistance) %>% 
+    unnest_wider(x, names_sep = "_") %>% 
+    unite("pax_high_res", starts_with("x_"), sep = ";", na.rm = TRUE)
+)
+try(
+  to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_high_res, by = "name") %>% 
+    # Coalesce the two pax_high_res columns. WIll add from rdrp_high_res if there is NA in to_BN_rdrp
+    mutate(pax_high_res = coalesce(pax_high_res.x, pax_high_res.y)) %>%
+    select(-pax_high_res.x, -pax_high_res.y)
+)
+
+try(
+  rdrp_mid_res <- df %>% 
+    filter(type == "pax_mid_res") %>% 
+    select(name, RdRP_resistance) %>% 
+    add_column(dummy = "x") %>% 
+    pivot_wider(names_from = dummy, values_from = RdRP_resistance) %>% 
+    unnest_wider(x, names_sep = "_") %>% 
+    unite("pax_mid_res", starts_with("x_"), sep = ";", na.rm = TRUE)
+)
+try(
+  to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_mid_res, by = "name") %>% 
+    # Coalesce the two pax_mid_res columns. WIll add from rdrp_mid_res if there is NA in to_BN_rdrp
+    mutate(pax_mid_res = coalesce(pax_mid_res.x, pax_mid_res.y)) %>%
+    select(-pax_mid_res.x, -pax_mid_res.y)
+)
+
+try(
+  rdrp_low_res <- df %>% 
+    filter(type == "pax_low_res") %>% 
+    select(name, RdRP_resistance) %>% 
+    add_column(dummy = "x") %>% 
+    pivot_wider(names_from = dummy, values_from = RdRP_resistance) %>% 
+    unnest_wider(x, names_sep = "_") %>% 
+    unite("pax_low_res", starts_with("x_"), sep = ";", na.rm = TRUE)
+)
+try(
+  to_BN_rdrp <- left_join(to_BN_rdrp, rdrp_low_res, by = "name") %>% 
+    # Coalesce the two pax_low_res columns. WIll add from rdrp_low_res if there is NA in to_BN_rdrp
+    mutate(pax_low_res = coalesce(pax_low_res.x, pax_low_res.y)) %>%
+    select(-pax_low_res.x, -pax_low_res.y)
+)
+
+
+# Create BN import files --------------------------------------------------
+
+
+# Create BN import files. Need to separate Ahus and Sihf because they will be imported on Key
+
+fhi_to_BN_NSP5 <- to_BN_NSP5 %>% 
+  # Extract FHI samples
+  filter(str_detect(name, "SC2$")) %>% 
+  rename("SEQUENCEID_NANO29" = "name")
+
+write_csv(fhi_to_BN_NSP5, 
+          file = paste0("C:/Users/jonr/OneDrive - Folkehelseinstituttet/Desktop/", format(Sys.Date(), "%Y.%m.%d"), "-FHI_samples_NSP5_resistance_BN_import.csv"),
+          na = "")
+
+external_to_BN_NSP5 <- to_BN_NSP5 %>% 
+  # Extract FHI samples
+  filter(str_detect(name, "Ahus") | str_detect(name, "SIHF")) %>%
+  rename("KEY" = "name")
+
+write_csv(external_to_BN_NSP5, 
+          file = paste0("C:/Users/jonr/OneDrive - Folkehelseinstituttet/Desktop/", format(Sys.Date(), "%Y.%m.%d"), "-External_samples_NSP5_resistance_BN_import.csv"),
+          na = "")
+
+##### OLD CODE #####
 
 # Combine for RAVN --------------------------------------------------------
 
@@ -271,27 +402,27 @@ To_RAVN <- bind_rows(RAVN_nsp5, RAVN_RdRP)
 # How to process many oppsett?
 
 # Nanopore
-mutatations_raw_1 <- read_tsv("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/2021/Oppsett102A_summaries/Oppsett102A_NextcladeAndPangolin.csv") %>% 
+mutations_raw_1 <- read_tsv("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/2021/Oppsett102A_summaries/Oppsett102A_NextcladeAndPangolin.csv") %>% 
   # Create a new column that matches SEQUENCEID from the seqName column
   separate(seqName, into = c("Sample", NA, NA), sep = "/", remove = FALSE)
 
 
-mutatations_raw_2 <- read_tsv("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_FHI/2021/20210518-S3-FHI81/results/nextclade_for_FHI.tsv") %>% 
+mutations_raw_2 <- read_tsv("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_FHI/2021/20210518-S3-FHI81/results/nextclade_for_FHI.tsv") %>% 
   # Create a new column that matches SEQUENCEID from the seqName column
   separate(name, into = c("Sample", NA, NA), sep = "_", remove = FALSE)
 
 # FHI
-mutatations_raw_3 <- read_tsv("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_FHI/2023/FHI568-S3-EXT-20230106-01/results/nextclade_and_noise_for_FHI.tsv") %>% 
+mutations_raw_3 <- read_tsv("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_FHI/2023/FHI568-S3-EXT-20230106-01/results/nextclade_and_noise_for_FHI.tsv") %>% 
   # Create a new column that matches SEQUENCEID from the seqName column
   separate(name, into = c("Sample", NA, NA), sep = "-", remove = FALSE)
 
 # Nanopore
-mutatations_raw_3 <- read_tsv("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_FHI/2023/FHI568-S3-EXT-20230106-01/results/nextclade_and_noise_for_FHI.tsv") %>% 
+mutations_raw_3 <- read_tsv("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_FHI/2023/FHI568-S3-EXT-20230106-01/results/nextclade_and_noise_for_FHI.tsv") %>% 
   # Create a new column that matches SEQUENCEID from the seqName column
   separate(name, into = c("Sample", NA, NA), sep = "-", remove = FALSE)
 
-mutatations_raw <- bind_rows(mutatations_raw_1, mutatations_raw_2)
-mutatations_raw <- mutatations_raw_3
+mutations_raw <- bind_rows(mutations_raw_1, mutations_raw_2)
+mutations_raw <- mutations_raw_3
 
 # MIK
 MIK_1 <- list.files("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_MIK/20230111-S4-MIK414-230901/results/",
@@ -400,19 +531,19 @@ final <- tribble(
 pb <- txtProgressBar(min = 0, max = length(files), initial = 0) 
 for (i in 1:length(files)) {
   setTxtProgressBar(pb, i)
-  try(rm(mutatations_raw))
+  try(rm(mutations_raw))
   try(rm(NSP5_all_muts))
   try(rm(NSP5_high_res))
   try(rm(NSP5_mid_res))
   try(rm(NSP5_low_res))
   
-  mutatations_raw <- read_tsv(files[i])# %>% 
+  mutations_raw <- read_tsv(files[i])# %>% 
     # Create a new column that matches SEQUENCEID from the seqName column
     #separate(name, into = c("Sample", NA, NA), sep = "_", remove = FALSE)
     #mutate("Sample" = str_remove(name, "_ivar_masked"))
   
   # nsp5 is on ORF1a
-  nextclade_nsp5_mutations <- mutatations_raw %>% 
+  nextclade_nsp5_mutations <- mutations_raw %>% 
     # Get only ORF1a
     select(name, ORF1a) %>%
     # Separate all the mutations. Gives a list for each sample
@@ -551,16 +682,16 @@ final <- tribble(
 # Loop through the files
 for (i in 1:length(files)) {
   
-  try(rm(mutatations_raw))
+  try(rm(mutations_raw))
   try(rm(NSP5_all_muts))
   try(rm(NSP5_high_res))
   try(rm(NSP5_mid_res))
   try(rm(NSP5_low_res))
   
-  mutatations_raw <- read_tsv(files[i])
+  mutations_raw <- read_tsv(files[i])
   
   # nsp5 is on ORF1a
-  nextclade_nsp5_mutations <- mutatations_raw %>% 
+  nextclade_nsp5_mutations <- mutations_raw %>% 
     # Get only ORF1a
     select(name, ORF1a) %>% 
     # Separate all the mutations. Gives a list for each sample
@@ -691,17 +822,17 @@ for (i in 89:123) {
   setTxtProgressBar(pb, i)
   
   
-  try(rm(mutatations_raw))
+  try(rm(mutations_raw))
   try(rm(NSP5_all_muts))
   try(rm(NSP5_high_res))
   try(rm(NSP5_mid_res))
   try(rm(NSP5_low_res))
   
-  mutatations_raw <- read_tsv(files[i])# %>% 
+  mutations_raw <- read_tsv(files[i])# %>% 
     #mutate("Sample" = name)
   
   # nsp5 is on ORF1a
-  nextclade_nsp5_mutations <- mutatations_raw %>% 
+  nextclade_nsp5_mutations <- mutations_raw %>% 
     # Get only ORF1a
     select(name, ORF1a) %>%
     # Separate all the mutations. Gives a list for each sample
