@@ -6,6 +6,7 @@ library(tidyverse)
 # Prepare input data ------------------------------------------------------
 
 # Load the resistance associated mutations
+# Download latest csv from here: https://covdb.stanford.edu/drms/3clpro/
 stanf_3clpro <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.01.12_3CLpro_inhibitors.csv") %>% 
   rename("stanford_res" = Mutation) %>%
   # Rename the paxlovid fold
@@ -18,6 +19,7 @@ stanf_3clpro <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/202
   mutate(nextclade_position = stanford_position + 3263)
 
 # Load the resistance associated mutations
+# Download latest csv from here: https://covdb.stanford.edu/drms/rdrp/
 stanf_rdrp <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.01.12_RdRP_inhibitors.csv") %>% 
   rename("stanford_res" = Mutation) %>%
   # Rename the remdesivir fold
