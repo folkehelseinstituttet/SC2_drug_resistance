@@ -36,6 +36,34 @@ stanf_rdrp <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.
 # year to analyze
 year <- "2023"
 
+fhi_illumina_files <- list.files(paste0("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_FHI/", year, "/"),
+                                 pattern = "nextclade_and_noise_for_FHI.tsv$",
+                                 full.names = TRUE,
+                                 recursive = TRUE)
+
+# This will list files and directories beginning with "2023"
+mik_illumina_dirs <- list.files(path = "N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_MIK/",
+                                pattern = "^2023", 
+                                full.names = TRUE)
+
+# Filter only directories
+#mik_illumina_dirs <- mik_illumina_dirs[sapply(mik_illumina_dirs, function(x) file.info(x)$isdir & grepl("^2023", basename(x)))]
+
+# List Nextclade files in these directories
+# Initialize a vector to store the paths of found files
+mik_illumina_files <- c()
+
+# Loop over each directory
+for (dir in mik_illumina_dirs) {
+  # Search for the file within the directory
+  files_in_dir <- list.files(path = dir, pattern = paste0("^", "nextclade_and_noise_for_FHI.tsv", "$"), full.names = TRUE, recursive = TRUE)
+  
+  # If the file is found, add its path to the found_files vector
+  if (length(files_in_dir) > 0) {
+    mik_illumina_files <- c(mik_illumina_files, files_in_dir)
+  }
+}
+
 nanopore_files <- list.files(paste0("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/", year, "/"),
                     pattern = "summaries_and_Pangolin.csv$",
                     full.names = TRUE,
@@ -56,7 +84,7 @@ ahus_files <- list.files(paste0("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resul
                     full.names = TRUE,
                     recursive = TRUE)
 
-files <- c(nanopore_files, sihf_files, ahus_files)
+files <- c(fhi_illumina_files, mik_illumina_files, nanopore_files, sihf_files, ahus_files)
 
 # Read all the files and combine
 res <- vector("list", length = length(files))
@@ -75,8 +103,11 @@ mutations_raw <- bind_rows(res) %>%
   # Remove samples with NA for both ORF1a and ORF1b
   filter(!is.na(ORF1a) & !is.na(ORF1b)) %>% 
   # Fix Ahus names to match BN Key (i.e. remove everything after first "|" symbol)
-  separate(name, into = c("name"), sep = "\\|", remove = TRUE) 
-
+  separate(name, into = c("name"), sep = "\\|", remove = TRUE) %>% 
+  # Fix NSC names to match BN Key
+  mutate(name = str_remove(name, "_ivar_masked")) %>% 
+  # Discard duplicates
+  distinct()
 
 
 # nsp5 --------------------------------------------------------------------
