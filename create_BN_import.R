@@ -1,9 +1,38 @@
 library(tidyverse)
-
+library(odbc)
+library(lubridate)
 
 # TODO --------------------------------------------------------------------
 
 # Prepare input data ------------------------------------------------------
+
+# year to analyze
+year <- "2023"
+
+# Query BN and get list of relevant samples
+# Establish connection to the BN_Covid19 database on SQL Server
+con <- dbConnect(odbc(),
+                 Driver = "SQL Server",
+                 Server = "sql-bn-covid19",
+                 Database = "BN_Covid19")
+
+BN <- tbl(con, "ENTRYTABLE") %>% 
+  select(KEY, PROVE_TATT, SEQUENCEID_NANO29, SEQUENCEID_SWIFT, PANGOLIN_NOM) %>%
+  collect()
+
+# Close the database connection
+dbDisconnect(con)
+
+# Create list of relevant samples
+samples <- BN %>% 
+  mutate(PROVE_TATT = ymd(PROVE_TATT)) %>% 
+  filter(PROVE_TATT >= paste0(year, "-01-01")) %>% 
+  filter(str_detect(PANGOLIN_NOM, "BESTILT", negate = T)) %>% 
+  filter(str_detect(PANGOLIN_NOM, "nkonklusiv", negate = T)) %>% 
+  filter(str_detect(PANGOLIN_NOM, "nassigned", negate = T)) %>% 
+  filter(str_detect(PANGOLIN_NOM, "kommentar", negate = T)) %>% 
+  filter(str_detect(PANGOLIN_NOM, "Ikke", negate = T)) %>% 
+  filter(PANGOLIN_NOM != "")
 
 # Load the resistance associated mutations
 # Download latest csv from here: https://covdb.stanford.edu/drms/3clpro/
@@ -32,9 +61,6 @@ stanf_rdrp <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.
   mutate(nextclade_position = stanford_position - 9)
 
 # Get Nextclade mutations
-
-# year to analyze
-year <- "2023"
 
 fhi_illumina_files <- list.files(paste0("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Illumina_NSC_FHI/", year, "/"),
                                  pattern = "nextclade_and_noise_for_FHI.tsv$",
@@ -185,7 +211,9 @@ try(
     add_column(dummy = "x") %>% 
     pivot_wider(names_from = dummy, values_from = NSP5) %>% 
     unnest_wider(x, names_sep = "_") %>% 
-    unite("NSP5", starts_with("x_"), sep = ";", na.rm = TRUE)
+    unite("NSP5", starts_with("x_"), sep = ";", na.rm = TRUE) %>% 
+    # NA means no mutations found
+    replace_na(list(NSP5 = "No_mutations"))
 )
 try(
   to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_all_muts, by = "name") %>% 
@@ -384,6 +412,41 @@ try(
 
 # Create BN import files --------------------------------------------------
 
+# Create a common BN import file with Key for all the sequences
+# Remove all "-" and "_" in the SequenceID's for matching
+to_BN_NSP5 <- to_BN_NSP5 %>% 
+  mutate(name = str_replace(name, "-SC2", "SC2")) %>% 
+  mutate(name = str_replace(name, "_SC2", "SC2"))
+
+samples <- samples %>% 
+  mutate(SEQUENCEID_NANO29 = str_replace(SEQUENCEID_NANO29, "-SC2", "SC2")) %>% 
+  mutate(SEQUENCEID_NANO29 = str_replace(SEQUENCEID_NANO29, "_SC2", "SC2")) %>% 
+  mutate(SEQUENCEID_SWIFT = str_replace(SEQUENCEID_SWIFT, "-SC2", "SC2")) %>% 
+  mutate(SEQUENCEID_SWIFT = str_replace(SEQUENCEID_SWIFT, "_SC2", "SC2"))
+
+# First match on the KEY
+NSP5_BN_import <- left_join(samples, to_BN_NSP5, by = c("KEY" = "name")) %>%
+  # Then match on the Nanopore sequence id
+  left_join(to_BN_NSP5, by = c("SEQUENCEID_NANO29" = "name")) %>% 
+  mutate(NSP5 = coalesce(NSP5.x, NSP5.y)) %>%
+  mutate(pax_low_res = coalesce(pax_low_res.x, pax_low_res.y)) %>%
+  mutate(pax_mid_res = coalesce(pax_mid_res.x, pax_mid_res.y)) %>%
+  mutate(pax_high_res = coalesce(pax_high_res.x, pax_high_res.y)) %>%
+  select(-NSP5.x, -NSP5.y, -pax_low_res.x, -pax_low_res.y, -pax_mid_res.x, -pax_mid_res.y, -pax_high_res.x, -pax_high_res.y) %>% 
+  # Then match on the Swift sequence id
+  left_join(to_BN_NSP5, by = c("SEQUENCEID_SWIFT" = "name")) %>% 
+  mutate(NSP5 = coalesce(NSP5.x, NSP5.y)) %>%
+  mutate(pax_low_res = coalesce(pax_low_res.x, pax_low_res.y)) %>%
+  mutate(pax_mid_res = coalesce(pax_mid_res.x, pax_mid_res.y)) %>%
+  mutate(pax_high_res = coalesce(pax_high_res.x, pax_high_res.y)) %>% 
+  # Keep relevant columns for BN import
+  select(KEY, pax_high_res, pax_mid_res, pax_low_res, NSP5)
+
+write_csv(NSP5_BN_import, 
+          file = paste0("C:/Users/jonr/OneDrive - Folkehelseinstituttet/Desktop/", format(Sys.Date(), "%Y.%m.%d"), "-NSP5_resistance_BN_import.csv"),
+          na = "")
+
+## Can stop here ##
 
 # Create BN import files. Need to separate Ahus and Sihf because they will be imported on Key
 
