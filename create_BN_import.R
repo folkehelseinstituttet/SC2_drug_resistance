@@ -1,5 +1,257 @@
 library(tidyverse)
 
+# nsp5 --------------------------------------------------------------------
+
+# Create one big df for all the nextclade and pangolin files
+# TODO: Add SIHF and Ahus into the big tibble
+
+# Make a single BN import file in the end
+files <- list.files("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/2023/",
+                    pattern = "summaries_and_Pangolin.csv$",
+                    full.names = TRUE,
+                    recursive = TRUE)
+
+# Read all the files and combine
+res <- list()
+for (i in 1:length(files)) {
+  res[[i]] <- read_tsv(files[i]) %>% 
+    select(name, ORF1a)
+}
+
+# Combine everything into one big tibble
+mutatations_raw <- bind_rows(res)
+
+# nsp5 is on ORF1a
+nextclade_nsp5_mutations <- mutatations_raw %>% 
+  # Get only ORF1a
+  select(name, ORF1a) %>%
+  # Separate all the mutations. Gives a list for each sample
+  mutate("tmp" = str_split(ORF1a, ";")) %>% 
+  # Unnest the list column (which is basically another pivot_longer)
+  # Get each mutation on a separate line in a column named tmp
+  unnest(tmp) %>%
+  # Remove tmp
+  select(-ORF1a) %>% 
+  rename("ORF1a" = tmp) %>% 
+  # Tease out the position, reference and mutated amino acid
+  mutate(nextclade_position  = as.numeric(str_sub(ORF1a, 2, -2)),
+         nextclade_reference = str_sub(ORF1a, 1, 1),
+         nextclade_mutated   = str_sub(ORF1a, -1, -1)) %>% 
+  # Filter out only the nsp5 gene (aa 3264 to 3569)
+  filter(nextclade_position >= 3264, nextclade_position <= 3569) %>% 
+  # convert to stanford nomenclature
+  mutate(stanford_position = nextclade_position - 3263) %>% 
+  # Create column for nsp5 mutations
+  unite("NSP5", c("nextclade_reference", "stanford_position", "nextclade_mutated"), sep = "")
+
+
+# Add the resistance mutations to the nextclade mutations
+# If any resistance mutations are present they will be in the "stanford_res" column
+left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "stanford_res"), keep = TRUE) %>% 
+  # Renaming the resistance column
+  rename("NSP5_resistance" = "stanford_res") %>% 
+  # Add info on strength of resistance
+  mutate("type" = case_when(
+    NTV_fold >= 10                 ~ "high_res",
+    NTV_fold >= 5 | NTV_fold < 10  ~ "mid_res",
+    NTV_fold >= 2.5 | NTV_fold < 5 ~ "very_mid_res",
+    NTV_fold < 2.5                 ~ "white"
+  )) %>% View()
+
+# To RAVN
+RAVN_nsp5 <- left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "stanford_res"), keep = TRUE) %>% 
+  # Renaming the resistance column
+  rename("NSP5_resistance" = "stanford_res") %>% 
+  # Add info on strength of resistance
+  mutate("type" = case_when(
+    NTV_fold >= 10                 ~ "high_res",
+    NTV_fold >= 5 | NTV_fold < 10  ~ "mid_res",
+    NTV_fold >= 2.5 | NTV_fold < 5 ~ "very_mid_res",
+    NTV_fold < 2.5                 ~ "white"
+  )) %>% 
+  select("sample" = name,
+         NSP5_resistance) %>% 
+  distinct() %>% 
+  # Remove only NA's
+  filter(!is.na(NSP5_resistance))
+
+# To BN
+# Maybe I have to loop throught the data structure here and create the different cells separately
+
+df <- left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "stanford_res"), keep = TRUE) %>% 
+  # Renaming the resistance column
+  rename("NSP5_resistance" = "stanford_res") %>% 
+  # Add info on strength of resistance
+  mutate("type" = case_when(
+    NTV_fold >= 10                 ~ "pax_high_res",
+    NTV_fold >= 5 | NTV_fold < 10  ~ "pax_mid_res",
+    NTV_fold >= 2.5 | NTV_fold < 5 ~ "pax_low_res",
+    NTV_fold < 2.5                 ~ "pax_very_low_res"
+  ))
+
+# Create empty data frame
+to_BN_NSP5 <- df %>% 
+  select(name) %>% distinct() %>%  
+  add_column("pax_high_res" = NA,
+             "pax_mid_res" = NA,
+             "pax_low_res" = NA,
+             "NSP5" = NA)
+
+# First need to get all the NSP5 mutations in the same cell.
+try(
+  NSP5_all_muts <- df %>% 
+    select(name, NSP5) %>% 
+    add_column(dummy = "x") %>% 
+    pivot_wider(names_from = dummy, values_from = NSP5) %>% 
+    unnest_wider(x, names_sep = "_") %>% 
+    unite("NSP5", starts_with("x_"), sep = ";", na.rm = TRUE)
+)
+try(
+  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_all_muts, by = "name")
+)
+
+# Then only NSP5 resistance mutations for the different categories
+try(
+  NSP5_high_res <- df %>% 
+    filter(type == "pax_high_res") %>% 
+    select(name, NSP5_resistance) %>% 
+    add_column(dummy = "x") %>% 
+    pivot_wider(names_from = dummy, values_from = NSP5_resistance) %>% 
+    unnest_wider(x, names_sep = "_") %>% 
+    unite("pax_high_res", starts_with("x_"), sep = ";", na.rm = TRUE)
+)
+try(
+  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_high_res, by = "name")
+)
+
+try(
+  NSP5_mid_res <- df %>% 
+    filter(type == "pax_mid_res") %>% 
+    select(name, NSP5_resistance) %>% 
+    add_column(dummy = "x") %>% 
+    pivot_wider(names_from = dummy, values_from = NSP5_resistance) %>% 
+    unnest_wider(x, names_sep = "_") %>% 
+    unite("pax_mid_res", starts_with("x_"), sep = ";", na.rm = TRUE)
+)
+try(
+  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_mid_res, by = "name")
+)
+
+try(
+  NSP5_low_res <- df %>% 
+    filter(type == "pax_low_res") %>% 
+    select(name, NSP5_resistance) %>% 
+    add_column(dummy = "x") %>% 
+    pivot_wider(names_from = dummy, values_from = NSP5_resistance) %>% 
+    unnest_wider(x, names_sep = "_") %>% 
+    unite("pax_low_res", starts_with("x_"), sep = ";", na.rm = TRUE)
+)
+try(
+  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_low_res, by = "name")
+)
+
+# Fix for BN import
+to_BN_NSP5 <- to_BN_NSP5 %>% 
+  rename("LW_ORIG_PROVE" = "name")
+
+# Test
+write_csv(to_BN_NSP5, 
+          file = "C:/Users/jonr/OneDrive - Folkehelseinstituttet/Desktop/BN_resistance_test_import.csv",
+          na = "")
+
+# RdRP --------------------------------------------------------------------
+
+# Create one big df for all the nextclade and pangolin files
+# TODO: Add SIHF and Ahus into the big tibble
+
+# Make a single BN import file in the end
+files <- list.files("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/2023/",
+                    pattern = "summaries_and_Pangolin.csv$",
+                    full.names = TRUE,
+                    recursive = TRUE)
+
+# Read all the files and combine
+res <- list()
+for (i in 1:length(files)) {
+  res[[i]] <- read_tsv(files[i]) %>% 
+    select(name, ORF1b)
+}
+
+# Combine everything into one big tibble
+mutatations_raw <- bind_rows(res)
+
+# RdRP (nsp12) is on ORF1b
+nextclade_rdrp_mutations <- mutatations_raw %>% 
+  # Get only ORF1b
+  select(name, ORF1b) %>%
+  # Separate all the mutations. Gives a list for each sample
+  mutate("tmp" = str_split(ORF1b, ";")) %>% 
+  # Unnest the list column (which is basically another pivot_longer)
+  # Get each mutation on a separate line in a column named tmp
+  unnest(tmp) %>%
+  # Remove tmp
+  select(-ORF1b) %>% 
+  rename("ORF1b" = tmp) %>% 
+  # Tease out the position, reference and mutated amino acid
+  mutate(nextclade_position  = as.numeric(str_sub(ORF1b, 2, -2)),
+         nextclade_reference = str_sub(ORF1b, 1, 1),
+         nextclade_mutated   = str_sub(ORF1b, -1, -1)) %>% 
+  # Filter out only the RdRP gene (aa 1 (actually RdRP starts 9 aa before this. Into ORF1a) to 923)
+  filter(nextclade_position >= 1, nextclade_position <= 923) %>% 
+  # convert to stanford nomenclature
+  mutate(stanford_position = nextclade_position + 9) %>% 
+  # Create column for nsp5 mutations
+  unite("RdRP", c("nextclade_reference", "stanford_position", "nextclade_mutated"), sep = "")
+
+# Load the resistance associated mutations
+stanf_rdrp <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.01.12_RdRP_inhibitors.csv") %>% 
+  rename("stanford_res" = Mutation) %>%
+  # Rename the remdesivir fold
+  rename("RDV_fold" = `RDV: fold`) %>% 
+  # Change del to "-"
+  mutate(stanford_res = str_replace(stanford_res, "del", "-")) %>% 
+  mutate(stanford_position  = as.numeric(str_sub(stanford_res, 2, -2)),
+         stanford_reference = str_sub(stanford_res, 1, 1),
+         stanford_mutated   = str_sub(stanford_res, -1, -1)) %>% 
+  mutate(nextclade_position = stanford_position - 9)
+
+# Add the resistance mutations to the nextclade mutations
+# If any resistance mutations are present they will be in the "stanford_res" column
+left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
+  # Renaming the resistance column
+  rename("RdRP_resistance" = "stanford_res") %>% 
+  # Add info on strength of resistance
+  mutate("type" = case_when(
+    RDV_fold >= 10                 ~ "high_res",
+    RDV_fold >= 5 | RDV_fold < 10  ~ "mid_res",
+    RDV_fold >= 2.5 | RDV_fold < 5 ~ "very_mid_res",
+    RDV_fold < 2.5                 ~ "white"
+  )) %>% View()
+
+# To RAVN
+RAVN_RdRP <- left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
+  # Renaming the resistance column
+  rename("RdRP_resistance" = "stanford_res") %>% 
+  # Add info on strength of resistance
+  mutate("type" = case_when(
+    RDV_fold >= 10                 ~ "high_res",
+    RDV_fold >= 5 | RDV_fold < 10  ~ "mid_res",
+    RDV_fold >= 2.5 | RDV_fold < 5 ~ "very_mid_res",
+    RDV_fold < 2.5                 ~ "white"
+  )) %>% 
+  select("sample" = name,
+         RdRP_resistance) %>% 
+  distinct() %>% 
+  # Remove only NA's
+  filter(!is.na(RdRP_resistance))
+
+
+# Combine for RAVN --------------------------------------------------------
+
+To_RAVN <- bind_rows(RAVN_nsp5, RAVN_RdRP)
+
+# Koble mot BN for å hente ut Pango, andre ting...
+
 #### Problems with script:
 # Ahus: Only works for 2023 - loop is hardcoded. Need to change
 # Dash, underscore, etc. in NSC
@@ -561,255 +813,5 @@ write_csv(final, file = "C:/Users/jonr/OneDrive - Folkehelseinstituttet/Desktop/
 
 
 
-# nsp5 --------------------------------------------------------------------
 
-# Create one big df for all the nextclade and pangolin files
-# TODO: Add SIHF and Ahus into the big tibble
-
-# Make a single BN import file in the end
-files <- list.files("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/2023/",
-                    pattern = "summaries_and_Pangolin.csv$",
-                    full.names = TRUE,
-                    recursive = TRUE)
-
-# Read all the files and combine
-res <- list()
-for (i in 1:length(files)) {
-  res[[i]] <- read_tsv(files[i]) %>% 
-    select(name, ORF1a)
-}
-
-# Combine everything into one big tibble
-mutatations_raw <- bind_rows(res)
-
-# nsp5 is on ORF1a
-nextclade_nsp5_mutations <- mutatations_raw %>% 
-  # Get only ORF1a
-  select(name, ORF1a) %>%
-  # Separate all the mutations. Gives a list for each sample
-  mutate("tmp" = str_split(ORF1a, ";")) %>% 
-  # Unnest the list column (which is basically another pivot_longer)
-  # Get each mutation on a separate line in a column named tmp
-  unnest(tmp) %>%
-  # Remove tmp
-  select(-ORF1a) %>% 
-  rename("ORF1a" = tmp) %>% 
-  # Tease out the position, reference and mutated amino acid
-  mutate(nextclade_position  = as.numeric(str_sub(ORF1a, 2, -2)),
-         nextclade_reference = str_sub(ORF1a, 1, 1),
-         nextclade_mutated   = str_sub(ORF1a, -1, -1)) %>% 
-  # Filter out only the nsp5 gene (aa 3264 to 3569)
-  filter(nextclade_position >= 3264, nextclade_position <= 3569) %>% 
-  # convert to stanford nomenclature
-  mutate(stanford_position = nextclade_position - 3263) %>% 
-  # Create column for nsp5 mutations
-  unite("NSP5", c("nextclade_reference", "stanford_position", "nextclade_mutated"), sep = "")
-
-
-# Add the resistance mutations to the nextclade mutations
-# If any resistance mutations are present they will be in the "stanford_res" column
-left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "stanford_res"), keep = TRUE) %>% 
-  # Renaming the resistance column
-  rename("NSP5_resistance" = "stanford_res") %>% 
-  # Add info on strength of resistance
-  mutate("type" = case_when(
-    NTV_fold >= 10                 ~ "high_res",
-    NTV_fold >= 5 | NTV_fold < 10  ~ "mid_res",
-    NTV_fold >= 2.5 | NTV_fold < 5 ~ "very_mid_res",
-    NTV_fold < 2.5                 ~ "white"
-  )) %>% View()
-
-# To RAVN
-RAVN_nsp5 <- left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "stanford_res"), keep = TRUE) %>% 
-  # Renaming the resistance column
-  rename("NSP5_resistance" = "stanford_res") %>% 
-  # Add info on strength of resistance
-  mutate("type" = case_when(
-    NTV_fold >= 10                 ~ "high_res",
-    NTV_fold >= 5 | NTV_fold < 10  ~ "mid_res",
-    NTV_fold >= 2.5 | NTV_fold < 5 ~ "very_mid_res",
-    NTV_fold < 2.5                 ~ "white"
-  )) %>% 
-  select("sample" = name,
-         NSP5_resistance) %>% 
-  distinct() %>% 
-  # Remove only NA's
-  filter(!is.na(NSP5_resistance))
-
-# To BN
-# Maybe I have to loop throught the data structure here and create the different cells separately
-
-df <- left_join(nextclade_nsp5_mutations, stanf_3clpro, by = c("NSP5" = "stanford_res"), keep = TRUE) %>% 
-  # Renaming the resistance column
-  rename("NSP5_resistance" = "stanford_res") %>% 
-  # Add info on strength of resistance
-  mutate("type" = case_when(
-    NTV_fold >= 10                 ~ "pax_high_res",
-    NTV_fold >= 5 | NTV_fold < 10  ~ "pax_mid_res",
-    NTV_fold >= 2.5 | NTV_fold < 5 ~ "pax_low_res",
-    NTV_fold < 2.5                 ~ "pax_very_low_res"
-  ))
-
-# Create empty data frame
-to_BN_NSP5 <- df %>% 
-  select(name) %>% distinct() %>%  
-  add_column("pax_high_res" = NA,
-             "pax_mid_res" = NA,
-             "pax_low_res" = NA,
-             "NSP5" = NA)
-
-# First need to get all the NSP5 mutations in the same cell.
-try(
-  NSP5_all_muts <- df %>% 
-    select(name, NSP5) %>% 
-    add_column(dummy = "x") %>% 
-    pivot_wider(names_from = dummy, values_from = NSP5) %>% 
-    unnest_wider(x, names_sep = "_") %>% 
-    unite("NSP5", starts_with("x_"), sep = ";", na.rm = TRUE)
-)
-try(
-  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_all_muts, by = "name")
-)
-
-# Then only NSP5 resistance mutations for the different categories
-try(
-  NSP5_high_res <- df %>% 
-  filter(type == "pax_high_res") %>% 
-  select(name, NSP5_resistance) %>% 
-  add_column(dummy = "x") %>% 
-  pivot_wider(names_from = dummy, values_from = NSP5_resistance) %>% 
-  unnest_wider(x, names_sep = "_") %>% 
-  unite("pax_high_res", starts_with("x_"), sep = ";", na.rm = TRUE)
-)
-try(
-  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_high_res, by = "name")
-)
-
-try(
-  NSP5_mid_res <- df %>% 
-    filter(type == "pax_mid_res") %>% 
-    select(name, NSP5_resistance) %>% 
-    add_column(dummy = "x") %>% 
-    pivot_wider(names_from = dummy, values_from = NSP5_resistance) %>% 
-    unnest_wider(x, names_sep = "_") %>% 
-    unite("pax_mid_res", starts_with("x_"), sep = ";", na.rm = TRUE)
-)
-try(
-  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_mid_res, by = "name")
-)
-
-try(
-  NSP5_low_res <- df %>% 
-    filter(type == "pax_low_res") %>% 
-    select(name, NSP5_resistance) %>% 
-    add_column(dummy = "x") %>% 
-    pivot_wider(names_from = dummy, values_from = NSP5_resistance) %>% 
-    unnest_wider(x, names_sep = "_") %>% 
-    unite("pax_low_res", starts_with("x_"), sep = ";", na.rm = TRUE)
-)
-try(
-  to_BN_NSP5 <- left_join(to_BN_NSP5, NSP5_low_res, by = "name")
-)
-
-# Fix for BN import
-to_BN_NSP5 <- to_BN_NSP5 %>% 
-  rename("LW_ORIG_PROVE" = "name")
-
-# Test
-write_csv(to_BN_NSP5, 
-          file = "C:/Users/jonr/OneDrive - Folkehelseinstituttet/Desktop/BN_resistance_test_import.csv",
-          na = "")
-
-# RdRP --------------------------------------------------------------------
-
-# Create one big df for all the nextclade and pangolin files
-# TODO: Add SIHF and Ahus into the big tibble
-
-# Make a single BN import file in the end
-files <- list.files("N:/Virologi/NGS/1-NGS-Analyser/1-Rutine/2-Resultater/SARS-CoV-2/1-Nanopore/2023/",
-                    pattern = "summaries_and_Pangolin.csv$",
-                    full.names = TRUE,
-                    recursive = TRUE)
-
-# Read all the files and combine
-res <- list()
-for (i in 1:length(files)) {
-  res[[i]] <- read_tsv(files[i]) %>% 
-    select(name, ORF1b)
-}
-
-# Combine everything into one big tibble
-mutatations_raw <- bind_rows(res)
-
-# RdRP (nsp12) is on ORF1b
-nextclade_rdrp_mutations <- mutatations_raw %>% 
-  # Get only ORF1b
-  select(name, ORF1b) %>%
-  # Separate all the mutations. Gives a list for each sample
-  mutate("tmp" = str_split(ORF1b, ";")) %>% 
-  # Unnest the list column (which is basically another pivot_longer)
-  # Get each mutation on a separate line in a column named tmp
-  unnest(tmp) %>%
-  # Remove tmp
-  select(-ORF1b) %>% 
-  rename("ORF1b" = tmp) %>% 
-  # Tease out the position, reference and mutated amino acid
-  mutate(nextclade_position  = as.numeric(str_sub(ORF1b, 2, -2)),
-         nextclade_reference = str_sub(ORF1b, 1, 1),
-         nextclade_mutated   = str_sub(ORF1b, -1, -1)) %>% 
-  # Filter out only the RdRP gene (aa 1 (actually RdRP starts 9 aa before this. Into ORF1a) to 923)
-  filter(nextclade_position >= 1, nextclade_position <= 923) %>% 
-  # convert to stanford nomenclature
-  mutate(stanford_position = nextclade_position + 9) %>% 
-  # Create column for nsp5 mutations
-  unite("RdRP", c("nextclade_reference", "stanford_position", "nextclade_mutated"), sep = "")
-
-# Load the resistance associated mutations
-stanf_rdrp <- read_csv("N:/Virologi/JonBrate/Drug resistance SARSCOV2/data/2024.01.12_RdRP_inhibitors.csv") %>% 
-  rename("stanford_res" = Mutation) %>%
-  # Rename the remdesivir fold
-  rename("RDV_fold" = `RDV: fold`) %>% 
-  # Change del to "-"
-  mutate(stanford_res = str_replace(stanford_res, "del", "-")) %>% 
-  mutate(stanford_position  = as.numeric(str_sub(stanford_res, 2, -2)),
-         stanford_reference = str_sub(stanford_res, 1, 1),
-         stanford_mutated   = str_sub(stanford_res, -1, -1)) %>% 
-  mutate(nextclade_position = stanford_position - 9)
-
-# Add the resistance mutations to the nextclade mutations
-# If any resistance mutations are present they will be in the "stanford_res" column
-left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
-  # Renaming the resistance column
-  rename("RdRP_resistance" = "stanford_res") %>% 
-  # Add info on strength of resistance
-  mutate("type" = case_when(
-    RDV_fold >= 10                 ~ "high_res",
-    RDV_fold >= 5 | RDV_fold < 10  ~ "mid_res",
-    RDV_fold >= 2.5 | RDV_fold < 5 ~ "very_mid_res",
-    RDV_fold < 2.5                 ~ "white"
-  )) %>% View()
-
-# To RAVN
-RAVN_RdRP <- left_join(nextclade_rdrp_mutations, stanf_rdrp, by = c("RdRP" = "stanford_res"), keep = TRUE) %>% 
-  # Renaming the resistance column
-  rename("RdRP_resistance" = "stanford_res") %>% 
-  # Add info on strength of resistance
-  mutate("type" = case_when(
-    RDV_fold >= 10                 ~ "high_res",
-    RDV_fold >= 5 | RDV_fold < 10  ~ "mid_res",
-    RDV_fold >= 2.5 | RDV_fold < 5 ~ "very_mid_res",
-    RDV_fold < 2.5                 ~ "white"
-  )) %>% 
-  select("sample" = name,
-         RdRP_resistance) %>% 
-  distinct() %>% 
-  # Remove only NA's
-  filter(!is.na(RdRP_resistance))
-
-
-# Combine for RAVN --------------------------------------------------------
-
-To_RAVN <- bind_rows(RAVN_nsp5, RAVN_RdRP)
-
-# Koble mot BN for å hente ut Pango, andre ting...
 
