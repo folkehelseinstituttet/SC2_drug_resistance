@@ -83,7 +83,9 @@ joined_data$type <- ifelse(joined_data$NTV_fold >= 10, "pax_high_res",
 aggregated_data <- aggregate(NSP5 ~ name, data = joined_data, FUN = function(x) paste(x, collapse = ";"))
 
 
-# Modify the function to handle cases with no rows to aggregate
+# Create function that aggregates data based on the resistance levels in the "type" column 
+# type_name specifies the resistance levels. E.g. "pax_high_res"
+# The dataset is first filtered on these categories. Then any mutations present are aggregated on the same sample (name)
 aggregate_nsp5_by_type <- function(data, type_name) {
   filtered_data <- subset(data, type == type_name)
   
@@ -101,13 +103,16 @@ aggregate_nsp5_by_type <- function(data, type_name) {
   return(aggregated)
 }
 
-# Re-run the aggregation for each type and merge back into aggregated_data as before
+# Re-run the aggregation for each resistance category (level) and merge back into aggregated_data as before
 pax_high_res_data <- aggregate_nsp5_by_type(joined_data, "pax_high_res")
 pax_mid_res_data <- aggregate_nsp5_by_type(joined_data, "pax_mid_res")
 pax_low_res_data <- aggregate_nsp5_by_type(joined_data, "pax_low_res")
 
-# Merge the aggregated data back into aggregated_data
+# Merge the aggregated data back into aggregated_data on the sample names
 aggregated_data <- merge(aggregated_data, pax_high_res_data, by = "name", all.x = TRUE)
 aggregated_data <- merge(aggregated_data, pax_mid_res_data, by = "name", all.x = TRUE)
 aggregated_data <- merge(aggregated_data, pax_low_res_data, by = "name", all.x = TRUE)
 
+### Write final data ###
+# Write the final data as a tsv file
+write.table(aggregated_data, file = "stanford_3clpro_resistance.tsv", sep = "\t", row.names = FALSE, quote = FALSE)
