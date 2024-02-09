@@ -67,3 +67,8 @@ data_filtered$NSP5 <- with(data_filtered, paste(nextclade_reference, stanford_po
 
 # Remove unnecessary columns
 data_final <- data_filtered[c("name", "ORF1a", "nextclade_position", "NSP5")]
+
+### Merge Stanford positions with our data ###
+
+# Join 'data_final' with 'data' on the NSP5 and stanford_res columns. Only keeping rows in the data_final object
+joined_data <- merge(data_final, data, by.x = "NSP5", by.y = "stanford_res", all.x = TRUE)
