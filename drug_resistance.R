@@ -78,3 +78,36 @@ joined_data$type <- ifelse(joined_data$NTV_fold >= 10, "pax_high_res",
                                 ifelse(joined_data$NTV_fold >= 5, "pax_mid_res",
                                        ifelse(joined_data$NTV_fold >= 2.5, "pax_low_res",
                                               "pax_very_low_res")))
+
+# Collect all NSP5 mutations in a column named "NSP5"
+aggregated_data <- aggregate(NSP5 ~ name, data = joined_data, FUN = function(x) paste(x, collapse = ";"))
+
+
+# Modify the function to handle cases with no rows to aggregate
+aggregate_nsp5_by_type <- function(data, type_name) {
+  filtered_data <- subset(data, type == type_name)
+  
+  # Check if there are any rows after filtering
+  if (nrow(filtered_data) == 0) {
+    # If no rows, create a placeholder data frame with names from the original dataset and empty values for the type
+    aggregated <- data.frame(name = unique(data$name), stringsAsFactors = FALSE)
+    aggregated[type_name] <- ""  # Create an empty column for the type
+  } else {
+    # If rows exist, proceed with aggregation
+    aggregated <- aggregate(NSP5 ~ name, data = filtered_data, FUN = function(x) paste(unique(x), collapse = ";"))
+    colnames(aggregated)[2] <- type_name
+  }
+  
+  return(aggregated)
+}
+
+# Re-run the aggregation for each type and merge back into aggregated_data as before
+pax_high_res_data <- aggregate_nsp5_by_type(joined_data, "pax_high_res")
+pax_mid_res_data <- aggregate_nsp5_by_type(joined_data, "pax_mid_res")
+pax_low_res_data <- aggregate_nsp5_by_type(joined_data, "pax_low_res")
+
+# Merge the aggregated data back into aggregated_data
+aggregated_data <- merge(aggregated_data, pax_high_res_data, by = "name", all.x = TRUE)
+aggregated_data <- merge(aggregated_data, pax_mid_res_data, by = "name", all.x = TRUE)
+aggregated_data <- merge(aggregated_data, pax_low_res_data, by = "name", all.x = TRUE)
+
