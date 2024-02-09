@@ -72,3 +72,9 @@ data_final <- data_filtered[c("name", "ORF1a", "nextclade_position", "NSP5")]
 
 # Join 'data_final' with 'data' on the NSP5 and stanford_res columns. Only keeping rows in the data_final object
 joined_data <- merge(data_final, data, by.x = "NSP5", by.y = "stanford_res", all.x = TRUE)
+
+# Create a column "type" based on different NTV fold values
+joined_data$type <- ifelse(joined_data$NTV_fold >= 10, "pax_high_res",
+                                ifelse(joined_data$NTV_fold >= 5, "pax_mid_res",
+                                       ifelse(joined_data$NTV_fold >= 2.5, "pax_low_res",
+                                              "pax_very_low_res")))
